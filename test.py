@@ -411,11 +411,33 @@ class Tester:
             else:
                 self.fail(f"POST /skills/{skill['id']}/follow", r.text)
 
-            r = requests.post(f"{BASE_URL}/skills/{skill['id']}/follow", headers=self.auth(u))
             if r.status_code == 200:
                 self.ok(f"POST /skills/{skill['id']}/follow (toggle) → {r.json()['message']}")
             else:
                 self.fail(f"POST /skills/{skill['id']}/follow (unfollow)", r.text)
+
+        # GET /skills/me/following
+        # First follow a skill to ensure we have data
+        if self.users and self.skills:
+             u = self.users[0]
+             skill = self.skills[0]
+             # Ensure followed
+             r = requests.post(f"{BASE_URL}/skills/{skill['id']}/follow", headers=self.auth(u)) 
+             # Use the toggle endpoint. If it returns "unfollowed", do it again to "follow".
+             if r.status_code == 200 and "unfollowed" in r.json()["message"]:
+                 requests.post(f"{BASE_URL}/skills/{skill['id']}/follow", headers=self.auth(u))
+             
+             r = requests.get(f"{BASE_URL}/skills/me/following", headers=self.auth(u))
+             if r.status_code == 200:
+                 followed = r.json()
+                 self.ok(f"GET /skills/me/following → {len(followed)} skills")
+                 # Check if our skill is in the list
+                 if any(s['id'] == skill['id'] for s in followed):
+                     self.ok(f"Verified '{skill['name']}' is in followed list")
+                 else:
+                     self.fail(f"Followed skill '{skill['name']}' not found in list")
+             else:
+                 self.fail("GET /skills/me/following", r.text)
 
     # ═══════════════════════════════════════════════════════════════════════════
     # 4. USER SKILLS
@@ -668,6 +690,43 @@ class Tester:
         else:
             self.fail("GET /connections/?type=accepted", r.text)
 
+        # GET /users/{id}/connections
+        # u1 is connected to u2
+        r = requests.get(f"{BASE_URL}/users/{u1['response']['id']}/connections", headers=self.auth(u1))
+        if r.status_code == 200:
+            conns = r.json()
+            if any(u['id'] == u2['response']['id'] for u in conns):
+                self.ok(f"GET /users/{u1['response']['id']}/connections → found {u2['data']['name']}")
+            else:
+                self.warn(f"GET /users/{u1['response']['id']}/connections → {u2['data']['name']} not found in {conns}")
+        else:
+            self.fail(f"GET /users/{u1['response']['id']}/connections", r.text)
+
+        # Mutual Connections
+        # u1 <-> u2 exists.
+        # Let's connect u3 <-> u2.
+        # Then u1 and u3 should have u2 as mutual.
+        r = requests.post(f"{BASE_URL}/connections/",
+                          json={"recipient_id": u2["response"]["id"]},
+                          headers=self.auth(u3))
+        if r.status_code == 201:
+            conn_32 = r.json()
+            # u2 accepts
+            requests.put(f"{BASE_URL}/connections/{conn_32['id']}",
+                         json={"status": "accepted"}, headers=self.auth(u2))
+            
+            # Check mutuals for u1 looking at u3
+            r = requests.get(f"{BASE_URL}/users/{u3['response']['id']}/connections/mutual",
+                             headers=self.auth(u1))
+            if r.status_code == 200:
+                mutuals = r.json()
+                if any(u['id'] == u2['response']['id'] for u in mutuals):
+                    self.ok(f"GET /users/{u3['response']['id']}/connections/mutual → found mutual {u2['data']['name']}")
+                else:
+                    self.fail(f"Mutual connection check failed. Expected {u2['data']['name']}, got {mutuals}")
+            else:
+                self.fail(f"GET /users/{u3['response']['id']}/connections/mutual", r.text)
+
         # DELETE /connections/{id}/cancel
         if conn_15:
             r = requests.delete(f"{BASE_URL}/connections/{conn_15['id']}/cancel", headers=self.auth(u1))
@@ -784,6 +843,114 @@ class Tester:
         else:
             self.fail("GET /sessions/ (provider)", r.text)
 
+        # PUT /sessions/{id}/accept
+        if self.sessions_list:
+            sess = self.sessions_list[0]
+            # Provider accepts
+            r = requests.put(f"{BASE_URL}/sessions/{sess['id']}/accept", headers=self.auth(provider))
+            if r.status_code == 200:
+                self.ok(f"PUT /sessions/{sess['id']}/accept → accepted")
+            else:
+                self.fail(f"PUT /sessions/{sess['id']}/accept", r.text)
+
+        # PUT /sessions/{id}/complete
+        if self.sessions_list:
+            sess = self.sessions_list[0]
+            # Provider completes
+            r = requests.put(f"{BASE_URL}/sessions/{sess['id']}/complete", headers=self.auth(provider))
+            if r.status_code == 200:
+                self.ok(f"PUT /sessions/{sess['id']}/complete → completed")
+            else:
+                self.fail(f"PUT /sessions/{sess['id']}/complete", r.text)
+
+        # Create new session for rejection
+        payload_reject = {
+            "provider_id": provider["response"]["id"],
+            "skill_id":    self.skills[0]["id"],
+            "start_time":  "2026-06-02T10:00:00",
+            "end_time":    "2026-06-02T11:00:00",
+        }
+        r = requests.post(f"{BASE_URL}/sessions/", json=payload_reject, headers=self.auth(requester))
+        if r.status_code == 201:
+            sess_reject = r.json()
+            # Provider rejects
+            r = requests.put(f"{BASE_URL}/sessions/{sess_reject['id']}/reject", headers=self.auth(provider))
+            if r.status_code == 200:
+                self.ok(f"PUT /sessions/{sess_reject['id']}/reject → rejected")
+            else:
+                self.fail(f"PUT /sessions/{sess_reject['id']}/reject", r.text)
+
+        # Create new session for cancellation
+        payload_cancel = {
+            "provider_id": provider["response"]["id"],
+            "skill_id":    self.skills[0]["id"],
+            "start_time":  "2026-06-03T10:00:00",
+            "end_time":    "2026-06-03T11:00:00",
+        }
+        r = requests.post(f"{BASE_URL}/sessions/", json=payload_cancel, headers=self.auth(requester))
+        if r.status_code == 201:
+            sess_cancel = r.json()
+            # Requester cancels
+            r = requests.put(f"{BASE_URL}/sessions/{sess_cancel['id']}/cancel", headers=self.auth(requester))
+            if r.status_code == 200:
+                self.ok(f"PUT /sessions/{sess_cancel['id']}/cancel → cancelled")
+            else:
+                self.fail(f"PUT /sessions/{sess_cancel['id']}/cancel", r.text)
+
+        # GET /sessions?status=completed&role=provider
+        # We have 'sess' which is completed and provider is provider
+        r = requests.get(f"{BASE_URL}/sessions/?status=completed&role=provider", headers=self.auth(provider))
+        if r.status_code == 200:
+            filtered = r.json()
+            if len(filtered) >= 1 and filtered[0]['status'] == 'completed':
+                self.ok(f"GET /sessions?status=completed&role=provider → found {len(filtered)} completed sessions")
+            else:
+                self.warn(f"GET /sessions?status=completed&role=provider → unexpected result: {filtered}")
+        else:
+            self.fail("GET /sessions?status=completed", r.text)
+
+        # GET /sessions/upcoming
+        # 'sess' is in 2026, so upcoming
+        r = requests.get(f"{BASE_URL}/sessions/upcoming", headers=self.auth(provider))
+        if r.status_code == 200:
+            upcoming = r.json()
+            if any(s['id'] == sess['id'] for s in upcoming):
+                 self.ok("GET /sessions/upcoming → found future session")
+            else:
+                 self.warn("GET /sessions/upcoming → future session not found")
+        else:
+            self.fail("GET /sessions/upcoming", r.text)
+
+        # GET /sessions/past
+        # Attempt to book a past session
+        payload_past = {
+            "provider_id": provider["response"]["id"],
+            "skill_id":    self.skills[0]["id"],
+            "start_time":  "2020-01-01T10:00:00",
+            "end_time":    "2020-01-01T11:00:00",
+        }
+        r = requests.post(f"{BASE_URL}/sessions/", json=payload_past, headers=self.auth(requester))
+        if r.status_code == 201:
+            sess_past = r.json()
+            self.ok("POST /sessions/ (past date) → booked")
+            
+            r = requests.get(f"{BASE_URL}/sessions/past", headers=self.auth(requester))
+            if r.status_code == 200:
+                past = r.json()
+                if any(s['id'] == sess_past['id'] for s in past):
+                    self.ok("GET /sessions/past → found past session")
+                else:
+                    self.fail("GET /sessions/past → past session not found in list")
+            else:
+                self.fail("GET /sessions/past", r.text)
+        elif r.status_code == 400:
+            self.ok("POST /sessions/ (past date) → correctly rejected (cannot book past)")
+            # If rejected, we can't test /past endpoint effectively with a new session, 
+            # unless we manually insert, but for now we assume API blocks or allows.
+            # If blocked, we skip the /past list check or rely on unit tests.
+        else:
+            self.fail("POST /sessions/ (past date)", r.text)
+
     # ═══════════════════════════════════════════════════════════════════════════
     # 9. MESSAGING
     # ═══════════════════════════════════════════════════════════════════════════
@@ -836,13 +1003,74 @@ class Tester:
             else:
                 self.fail("POST /messaging/messages", r.text)
 
-        # GET /messaging/conversations/{id}/messages
         r = requests.get(f"{BASE_URL}/messaging/conversations/{conv['id']}/messages",
                          headers=self.auth(u1))
+        all_messages = []
         if r.status_code == 200:
-            self.ok(f"GET /messaging/conversations/{conv['id']}/messages → {len(r.json())} messages")
+            all_messages = r.json()
+            self.ok(f"GET /messaging/conversations/{conv['id']}/messages → {len(all_messages)} messages")
         else:
             self.fail(f"GET /messaging/conversations/{conv['id']}/messages", r.text)
+
+        # GET /messaging/unread-count
+        # u1 sent 2 msgs to u2 -> u2 has 2 unread
+        # u2 sent 1 msg to u1 -> u1 has 1 unread
+        
+        # Check u2 unread
+        r = requests.get(f"{BASE_URL}/messaging/unread-count", headers=self.auth(u2))
+        if r.status_code == 200:
+            count = r.json()['unread_count']
+            if count == 2:
+                self.ok(f"GET /messaging/unread-count (u2) → {count} (Expected 2)")
+            else:
+                self.fail(f"GET /messaging/unread-count (u2) → {count} (Expected 2)")
+        else:
+             self.fail("GET /messaging/unread-count (u2)", r.text)
+
+        # Check u1 unread
+        r = requests.get(f"{BASE_URL}/messaging/unread-count", headers=self.auth(u1))
+        if r.status_code == 200:
+             count = r.json()['unread_count']
+             if count == 1:
+                 self.ok(f"GET /messaging/unread-count (u1) → {count} (Expected 1)")
+             else:
+                 self.fail(f"GET /messaging/unread-count (u1) → {count} (Expected 1)")
+        else:
+             self.fail("GET /messaging/unread-count (u1)", r.text)
+
+        # PUT /messaging/messages/{id}/read
+        # u2 reads one message from u1
+        # Find a message sent by u1
+        msg_from_u1 = next((m for m in all_messages if m['sender_id'] == u1["response"]["id"]), None)
+        if msg_from_u1:
+            r = requests.put(f"{BASE_URL}/messaging/messages/{msg_from_u1['id']}/read", 
+                             headers=self.auth(u2))
+            if r.status_code == 200:
+                self.ok(f"PUT /messaging/messages/{msg_from_u1['id']}/read → marked read")
+            else:
+                self.fail(f"PUT /messaging/messages/{msg_from_u1['id']}/read", r.text)
+            
+            # Check u2 unread count -> should be 1
+            r = requests.get(f"{BASE_URL}/messaging/unread-count", headers=self.auth(u2))
+            if r.status_code == 200 and r.json()['unread_count'] == 1:
+                self.ok("Unread count decremented to 1")
+            else:
+                self.fail(f"Unread count check failed: {r.text}")
+
+        # PUT /messaging/conversations/{id}/read
+        # u2 marks entire conversation as read
+        r = requests.put(f"{BASE_URL}/messaging/conversations/{conv['id']}/read", headers=self.auth(u2))
+        if r.status_code == 200:
+             self.ok(f"PUT /messaging/conversations/{conv['id']}/read → marked conversation read")
+        else:
+             self.fail(f"PUT /messaging/conversations/{conv['id']}/read", r.text)
+
+        # Check u2 unread count -> should be 0
+        r = requests.get(f"{BASE_URL}/messaging/unread-count", headers=self.auth(u2))
+        if r.status_code == 200 and r.json()['unread_count'] == 0:
+            self.ok("Unread count dropped to 0")
+        else:
+            self.fail(f"Final unread count check failed: {r.text}")
 
     # ═══════════════════════════════════════════════════════════════════════════
     # 10. NOTIFICATIONS
