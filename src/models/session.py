@@ -6,7 +6,8 @@ import enum
 
 class SessionStatus(str, enum.Enum):
     PENDING = "pending"
-    CONFIRMED = "confirmed"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
     CANCELLED = "cancelled"
     COMPLETED = "completed"
 

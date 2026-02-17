@@ -106,3 +106,90 @@ def get_messages(
     ).order_by(Message.sent_at.asc()).all()
     
     return messages
+
+@router.put("/messages/{message_id}/read", response_model=MessageRead)
+def mark_message_read(
+    message_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    message = db.query(Message).filter(Message.id == message_id).first()
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+        
+    # Check if user is part of connection/conversation
+    # Ideally only recipient should mark as read.
+    # We can check conversation participants.
+    conversation = db.query(Conversation).filter(Conversation.id == message.conversation_id).first()
+    if not conversation: # Should be consistent DB
+        raise HTTPException(status_code=404, detail="Conversation not found")
+        
+    if conversation.user1_id != current_user.id and conversation.user2_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not a participant")
+
+    # If I sent it, I probably shouldn't mark it as read? 
+    # Usually "read" means the OTHER person read it.
+    # If I am the sender, `is_read` reflects if the RECIPIENT read it.
+    # So I should NOT be able to mark my own message as read (as in, I read my own message? trivial).
+    # The requirement is "Mark Message as Read" -> implying I am receiving it.
+    if message.sender_id == current_user.id:
+        # If I am sender, I can't "read" it to flip the flag. The flag is for the recipient.
+        # But maybe the user wants to just flip it? 
+        # Standard logic: Recipient marks as read.
+        pass # Allow or block? Let's allow for now as "marking as read" usually implies for *me*.
+             # Wait, `is_read` is a single boolean. If I send it, it is unread by recipient.
+             # If I mark it read, it means recipient read it? No.
+             # If I am recipient, I mark it read.
+    
+    # Let's enforce: Only non-senders can mark as read.
+    if message.sender_id == current_user.id:
+        # If I am the sender, I cannot mark it as read (it is for the other person to read).
+        # Unless it's a "note to self"? No, conversation is between 2 ppl.
+        raise HTTPException(status_code=400, detail="Cannot mark your own message as read")
+
+    message.is_read = True
+    db.commit()
+    db.refresh(message)
+    return message
+
+@router.put("/conversations/{conversation_id}/read", status_code=status.HTTP_200_OK)
+def mark_conversation_read(
+    conversation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    conversation = db.query(Conversation).filter(Conversation.id == conversation_id).first()
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+        
+    if conversation.user1_id != current_user.id and conversation.user2_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not a participant")
+
+    # Update all messages in this conversation where sender != current_user AND is_read = False
+    db.query(Message).filter(
+        Message.conversation_id == conversation.id,
+        Message.sender_id != current_user.id,
+        Message.is_read == False
+    ).update({Message.is_read: True}, synchronize_session=False)
+    
+    db.commit()
+    return {"message": "Conversation marked as read"}
+
+@router.get("/unread-count")
+def get_unread_count(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # Count messages where sender != current_user and is_read = False
+    # and I am a participant in the conversation basically check all messages 
+    # sent TO me. 
+    # Since Message doesn't permit explicit "recipient_id" column (it infers from conversation),
+    # we logic: Join Conversation, check if I am user1 or user2, and sender_id != me.
+    
+    count = db.query(Message).join(Conversation).filter(
+        (Conversation.user1_id == current_user.id) | (Conversation.user2_id == current_user.id),
+        Message.sender_id != current_user.id,
+        Message.is_read == False
+    ).count()
+    
+    return {"unread_count": count}

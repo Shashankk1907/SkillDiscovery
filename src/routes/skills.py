@@ -21,7 +21,7 @@ def suggest_skills(
         
     skills = (
         db.query(Skill)
-        .filter(Skill.name.ilike(f"%{query}%"))
+        .filter(Skill.name.ilike(f"%{query}%"), Skill.is_deleted == False)
         .limit(limit)
         .all()
     )
@@ -36,7 +36,7 @@ def toggle_follow_skill(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    skill = db.query(Skill).filter(Skill.id == skill_id).first()
+    skill = db.query(Skill).filter(Skill.id == skill_id, Skill.is_deleted == False).first()
     if not skill:
         raise HTTPException(status_code=404, detail="Skill not found")
         
@@ -55,6 +55,22 @@ def toggle_follow_skill(
         db.commit()
         return {"message": "Skill followed"}
 
+@router.get("/me/following", response_model=List[SkillRead])
+def get_followed_skills(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get list of skills followed by the current user.
+    """
+    followed_skills = (
+        db.query(Skill)
+        .join(SkillFollow, Skill.id == SkillFollow.skill_id)
+        .filter(SkillFollow.user_id == current_user.id, Skill.is_deleted == False)
+        .order_by(Skill.name.asc())
+        .all()
+    )
+    return followed_skills
 
 @router.post("/", response_model=SkillRead, status_code=status.HTTP_201_CREATED)
 def create_skill(
@@ -73,15 +89,26 @@ def create_skill(
         .first()
     )
     if existing:
-        raise HTTPException(
-            status_code=400,
-            detail="Skill already exists",
-        )
+        if existing.is_deleted:
+            # Reactivate
+            existing.is_deleted = False
+            existing.description = payload.description # Update details if changed
+            existing.category = payload.category
+            db.commit()
+            db.refresh(existing)
+            return existing
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Skill already exists",
+            )
 
     skill = Skill(
         name=normalized_name,
         category=payload.category,
-        description=payload.description,)
+        description=payload.description,
+        is_deleted=False
+    )
 
     db.add(skill)
     db.commit()
@@ -90,7 +117,7 @@ def create_skill(
 
 @router.get("/categories", response_model=List[str])
 def get_categories(db: Session = Depends(get_db)):
-    categories = db.query(Skill.category).distinct().all()
+    categories = db.query(Skill.category).filter(Skill.is_deleted == False).distinct().all()
     return [c[0] for c in categories if c[0]]
 
 @router.get("/", response_model=List[SkillRead])
@@ -101,7 +128,7 @@ def list_skills(
     limit: int = 50,
     db: Session = Depends(get_db),
 ):
-    query = db.query(Skill)
+    query = db.query(Skill).filter(Skill.is_deleted == False)
 
     if skill:
         query = query.filter(Skill.name.ilike(f"%{skill.lower()}%"))
@@ -121,7 +148,7 @@ def list_skills(
 def get_skill(
     skill_id: int,
     db: Session = Depends(get_db),):
-    skill = db.query(Skill).filter(Skill.id == skill_id).first()
+    skill = db.query(Skill).filter(Skill.id == skill_id, Skill.is_deleted == False).first()
 
     if not skill:
         raise HTTPException(status_code=404, detail="Skill not found")
@@ -137,8 +164,9 @@ def delete_skill(
 ):
     skill = db.query(Skill).filter(Skill.id == skill_id).first()
 
-    if not skill:
+    if not skill or skill.is_deleted:
         raise HTTPException(status_code=404, detail="Skill not found")
 
-    db.delete(skill)
+    # Soft delete
+    skill.is_deleted = True
     db.commit()

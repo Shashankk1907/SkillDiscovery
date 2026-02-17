@@ -432,3 +432,70 @@ def get_saved_users(
         SavedUser.user_id == current_user.id
     ).order_by(SavedUser.created_at.desc()).all()
     return saved
+    saved = db.query(SavedUser).filter(
+        SavedUser.user_id == current_user.id
+    ).order_by(SavedUser.created_at.desc()).all()
+    return saved
+
+
+# Connection Lists
+@router.get("/{user_id}/connections", response_model=List[UserRead])
+def get_user_connections(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user) # visibility check? roughly public profile feature
+):
+    # Get accepted connections for user_id
+    connections = db.query(Connection).filter(
+        ((Connection.requester_id == user_id) | (Connection.recipient_id == user_id)),
+        Connection.status == ConnectionStatus.ACCEPTED
+    ).all()
+    
+    connected_user_ids = set()
+    for c in connections:
+        if c.requester_id == user_id:
+            connected_user_ids.add(c.recipient_id)
+        else:
+            connected_user_ids.add(c.requester_id)
+            
+    if not connected_user_ids:
+        return []
+        
+    return db.query(User).filter(User.id.in_(connected_user_ids)).all()
+
+@router.get("/{user_id}/connections/mutual", response_model=List[UserRead])
+def get_mutual_connections(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if user_id == current_user.id:
+        return [] # No mutuals with self
+        
+    # 1. My connections
+    my_conns = db.query(Connection).filter(
+        ((Connection.requester_id == current_user.id) | (Connection.recipient_id == current_user.id)),
+        Connection.status == ConnectionStatus.ACCEPTED
+    ).all()
+    
+    my_ids = set()
+    for c in my_conns:
+        my_ids.add(c.recipient_id if c.requester_id == current_user.id else c.requester_id)
+        
+    # 2. Their connections
+    their_conns = db.query(Connection).filter(
+        ((Connection.requester_id == user_id) | (Connection.recipient_id == user_id)),
+        Connection.status == ConnectionStatus.ACCEPTED
+    ).all()
+    
+    their_ids = set()
+    for c in their_conns:
+        their_ids.add(c.recipient_id if c.requester_id == user_id else c.requester_id)
+        
+    # 3. Intersection
+    mutual_ids = my_ids.intersection(their_ids)
+    
+    if not mutual_ids:
+        return []
+        
+    return db.query(User).filter(User.id.in_(mutual_ids)).all()
