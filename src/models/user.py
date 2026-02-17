@@ -22,6 +22,7 @@ class User(Base):
     
     skills = relationship("UserSkill", back_populates="user")
     portfolio_items = relationship("UserPortfolio", back_populates="user")
+    availability = Column(Text, nullable=True) # JSON string of weekly availability
 
 
 

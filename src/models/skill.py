@@ -10,6 +10,7 @@ class Skill(Base):
     name = Column(String,  nullable=False, index=True)
     category=Column(String, nullable=False, index=True)
     description=Column(String,nullable=False, index=True)
+    is_deleted = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

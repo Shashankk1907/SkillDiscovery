@@ -29,6 +29,7 @@ class UserRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     is_superuser: Optional[bool] = False
+    availability: Optional[str] = None
 
     class Config:
         orm_mode = True # Changed from from_attributes to orm_mode for Pydantic v1 compatibility if needed, or stick to v2 if environment supports
@@ -38,3 +39,4 @@ class UserProfileAggregated(BaseModel):
     skills: List[UserSkillRead]
     portfolio: List[UserPortfolioRead]
     connection_status: Optional[str] = "none" # "none", "pending_sent", "pending_received", "accepted", "rejected", "self"
+    stats: Optional[dict] = None # e.g. {"views": 10, "connections": 5}
