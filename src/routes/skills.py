@@ -10,6 +10,52 @@ from src.models.user import User
 
 router = APIRouter(prefix="/skills", tags=["Skills"])
 
+@router.get("/suggestions", response_model=List[SkillRead])
+def suggest_skills(
+    query: str,
+    limit: int = 10,
+    db: Session = Depends(get_db)
+):
+    if not query:
+        return []
+        
+    skills = (
+        db.query(Skill)
+        .filter(Skill.name.ilike(f"%{query}%"))
+        .limit(limit)
+        .all()
+    )
+    return skills
+
+# Micro-UX: Follow Skill
+from src.models.skill_follow import SkillFollow
+
+@router.post("/{skill_id}/follow", status_code=status.HTTP_200_OK)
+def toggle_follow_skill(
+    skill_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    skill = db.query(Skill).filter(Skill.id == skill_id).first()
+    if not skill:
+        raise HTTPException(status_code=404, detail="Skill not found")
+        
+    existing = db.query(SkillFollow).filter(
+        SkillFollow.user_id == current_user.id,
+        SkillFollow.skill_id == skill_id
+    ).first()
+    
+    if existing:
+        db.delete(existing)
+        db.commit()
+        return {"message": "Skill unfollowed"}
+    else:
+        follow = SkillFollow(user_id=current_user.id, skill_id=skill_id)
+        db.add(follow)
+        db.commit()
+        return {"message": "Skill followed"}
+
+
 @router.post("/", response_model=SkillRead, status_code=status.HTTP_201_CREATED)
 def create_skill(
     payload: SkillCreate,

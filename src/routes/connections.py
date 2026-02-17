@@ -6,6 +6,7 @@ from src.config.database import get_db
 from src.models import Connection, User, ConnectionStatus
 from src.schemas.connection import ConnectionCreate, ConnectionRead, ConnectionUpdate
 from src.routes.users import get_current_user
+from src.routes.notifications import create_notification_internal
 
 router = APIRouter(prefix="/connections", tags=["Connections"])
 
@@ -49,7 +50,53 @@ def send_connection_request(
     db.add(new_connection)
     db.commit()
     db.refresh(new_connection)
+    
+    # Notify recipient
+    create_notification_internal(
+        db=db,
+        recipient_id=payload.recipient_id,
+        type="connection_request",
+        content=f"{current_user.name} sent you a connection request.",
+        related_entity_id=new_connection.id
+    )
+    
     return new_connection
+
+@router.delete("/{connection_id}/cancel", status_code=status.HTTP_204_NO_CONTENT)
+def cancel_connection_request(
+    connection_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    connection = db.query(Connection).filter(
+        Connection.id == connection_id,
+        Connection.requester_id == current_user.id,
+        Connection.status == ConnectionStatus.PENDING
+    ).first()
+    
+    if not connection:
+        raise HTTPException(status_code=404, detail="Pending connection request not found")
+        
+    db.delete(connection)
+    db.commit()
+
+@router.delete("/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_connection(
+    connection_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # Allow removing if user is either requester or recipient
+    connection = db.query(Connection).filter(
+        Connection.id == connection_id,
+        ((Connection.requester_id == current_user.id) | (Connection.recipient_id == current_user.id))
+    ).first()
+    
+    if not connection:
+        raise HTTPException(status_code=404, detail="Connection not found")
+        
+    db.delete(connection)
+    db.commit()
 
 @router.get("/requests", response_model=List[ConnectionRead])
 def get_pending_requests(
@@ -85,10 +132,28 @@ def update_connection_status(
 
 @router.get("/", response_model=List[ConnectionRead])
 def get_connections(
+    type: str = Query("accepted", regex="^(accepted|pending|sent)$"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return db.query(Connection).filter(
-        (Connection.requester_id == current_user.id) | (Connection.recipient_id == current_user.id),
-        Connection.status == ConnectionStatus.ACCEPTED
-    ).all()
+    query = db.query(Connection)
+    
+    if type == "accepted":
+        query = query.filter(
+            ((Connection.requester_id == current_user.id) | (Connection.recipient_id == current_user.id)),
+            Connection.status == ConnectionStatus.ACCEPTED
+        )
+    elif type == "pending":
+        # Received Pending Requests
+        query = query.filter(
+            Connection.recipient_id == current_user.id,
+            Connection.status == ConnectionStatus.PENDING
+        )
+    elif type == "sent":
+        # Sent Pending Requests
+        query = query.filter(
+            Connection.requester_id == current_user.id,
+            Connection.status == ConnectionStatus.PENDING
+        )
+        
+    return query.all()
